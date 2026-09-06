@@ -1,0 +1,3131 @@
+openapi: 3.1.0
+info:
+  title: Raid AI API
+  version: '2025-06-01'
+  summary: Detect AI-generated and manipulated media, and fact-check claims.
+  description: "The **Raid AI API** analyzes media for AI generation, deepfakes, and manipulation\nacross **images, audio, and video**, analyzes **documents** for tampering and AI generation,\nand **fact-checks** media against the public record.\n\nAll requests are authenticated with a **bearer token** — see **Authentication**. Endpoints\nare grouped by modality, plus *Fact-Checking* and a *System Management* health check.\n\n**Synchronous vs. asynchronous**\n- **Image** and **Audio** endpoints are *synchronous* — the response contains the result.\n- **Document** endpoints are *asynchronous* — one upload starts an analysis that runs for\n  minutes; the upload response carries the record, and you poll it until the verdict lands.\n- **Video** and **Fact-Checking** endpoints are *asynchronous* — you submit a job, receive an\n  id, then poll until it is complete.\n"
+  contact:
+    name: Raid AI Support
+    email: info@raidxai.com
+    url: https://raidxai.com
+  license:
+    name: Raid AI Terms of Service
+    url: https://raidxai.com
+security:
+- BearerAuth: []
+tags:
+- name: Image
+  description: Detect AI-generated, deepfaked, and digitally edited images.
+- name: Audio
+  description: Detect AI-generated and cloned voices, with optional transcription and analysis.
+- name: Video
+  description: Detect deepfake and AI-generated video. Asynchronous — submit then poll.
+- name: Document
+  description: Analyze documents for tampering and AI generation. One upload returns a document-level forensics verdict plus per-page results. Asynchronous — upload then poll.
+- name: Fact-Checking
+  description: Check images, audio, and video against the public record. Asynchronous.
+- name: System Management
+  description: Service health and liveness.
+paths:
+  /api/app/image-forensics/process:
+    post:
+      tags:
+      - Image
+      operationId: imageForensicsProcess
+      summary: Analyze image files
+      description: Upload one or more images and receive a verdict, confidence, and (on detailed plans) generator attribution and a deep-analysis breakdown for each image. Up to 10 images per request, max 50 MB each; formats jpg, jpeg, png, webp, heic, heif, tiff.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                imageFiles:
+                  type: array
+                  description: One or more image files to analyze.
+                  items:
+                    type: string
+                    format: binary
+                input.ExternalId:
+                  type: string
+                  description: Optional caller-provided ID to correlate this analysis with your own systems.
+                sourceUrl:
+                  type: string
+                  description: Optional source URL of the image, recorded for your own auditing.
+                processingMode:
+                  type: string
+                  enum:
+                  - REALTIME
+                  - BATCH
+                  default: REALTIME
+                  description: '`REALTIME` (default) analyzes immediately and returns verdicts in the response. `BATCH` queues the images for a later scheduled window at a reduced credit cost and returns a batch ID instead of results — see the Batch mode guide. Unrecognized values are treated as `REALTIME`.'
+              required:
+              - imageFiles
+      responses:
+        '200':
+          description: Analysis complete.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageForensicsResponse'
+              example:
+                images:
+                - id: f1d2e3c4-5678-90ab-cdef-1234567890ab
+                  fileName: suspect.jpg
+                  verdict: ai_generated
+                  confidence: 0.972
+                  isManipulated: true
+                  creditsUsed: 1
+                  processingTimeMs: 1840
+                  errorMessage: null
+                  createdAt: '2026-06-07T12:34:56Z'
+                  deepfakeScore: 0.12
+                  generators:
+                    midjourney: 0.95
+                    flux: 0.03
+                  deepAnalysis:
+                    agreement: strong
+                    keyIndicators:
+                    - Uniform texture across skin regions
+                    - Lighting direction is inconsistent with shadows
+                    detailedReasoning: The image shows rendering characteristics typical of AI generation, including uniform micro texture and inconsistent lighting.
+                    visualPatterns:
+                    - Overly smooth gradients in the background
+                    recommendations:
+                    - Request the original file from the source
+                    metadataFindings:
+                    - kind: editingSoftware
+                      value: Adobe Photoshop 24.0
+                      significance: warning
+                    - kind: createdDate
+                      value: 2026:06:01 10:00:00
+                      significance: info
+                    - kind: gpsPresent
+                      significance: notable
+                totalCreditsUsed: 1
+                totalProcessingTimeMs: 1840
+                isSuccessful: true
+                errorMessage: null
+                hasDetailedReport: true
+        '202':
+          description: Returned when `processingMode=BATCH`. The images are queued; credits are deducted now and results are retrievable once the batch completes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageBatchSubmitResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/image-forensics/batches:
+    post:
+      tags:
+      - Image
+      operationId: imageBatchSubmit
+      summary: Queue images for batch analysis
+      description: 'Queue images for analysis during the next scheduled window, at a reduced credit cost. Returns immediately with a batch ID and no verdicts, so reach for it when results are not needed straight away: dataset cleaning, bulk verification, historical backfills. Turnaround is up to one full processing window — for immediate verdicts use the process endpoint instead. Credits are deducted when the batch is accepted and refunded for any image that ultimately fails.'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                imageFiles:
+                  type: array
+                  description: Images to queue.
+                  items:
+                    type: string
+                    format: binary
+                input.ExternalId:
+                  type: string
+                  description: Optional caller-provided ID to correlate this batch with your own systems.
+              required:
+              - imageFiles
+      responses:
+        '202':
+          description: Batch accepted and queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageBatchSubmitResponse'
+              example:
+                batchId: 8f14e45f-ceea-467a-9f38-1a2b3c4d5e6f
+                status: Accepted
+                itemCount: 40
+                creditsCharged: 640
+                creditsPerItem: 16
+                realtimeCreditsPerItem: 20
+                estimatedProcessingWindow: next scheduled window
+                statusUrl: /api/app/image-forensics/batches/8f14e45f-ceea-467a-9f38-1a2b3c4d5e6f
+                externalId: null
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      tags:
+      - Image
+      operationId: imageBatchList
+      summary: List your batches
+      parameters:
+      - name: skip
+        in: query
+        schema:
+          type: integer
+          default: 0
+      - name: take
+        in: query
+        schema:
+          type: integer
+          default: 20
+      responses:
+        '200':
+          description: A page of batches, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageBatchPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/image-forensics/batches/{batchId}:
+    get:
+      tags:
+      - Image
+      operationId: imageBatchGet
+      summary: Get batch status
+      description: Poll this until isTerminal is true, then fetch the results. There is no webhook.
+      parameters:
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Current batch status and counters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageBatch'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/app/image-forensics/batches/{batchId}/results:
+    get:
+      tags:
+      - Image
+      operationId: imageBatchResults
+      summary: Get batch results
+      description: Per-image verdicts. Available as soon as individual images finish — you do not have to wait for the whole batch. Batch results carry verdict, confidence and deepfake score; deep analysis, generator attribution and heatmaps are realtime-only.
+      parameters:
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: skip
+        in: query
+        schema:
+          type: integer
+          default: 0
+      - name: take
+        in: query
+        schema:
+          type: integer
+          default: 20
+      responses:
+        '200':
+          description: A page of per-image results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageBatchResultPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/app/image-forensics/batches/{batchId}/cancel:
+    post:
+      tags:
+      - Image
+      operationId: imageBatchCancel
+      summary: Cancel a batch
+      description: Cancels images still waiting and refunds their credits. Images already being analyzed are left to finish, so the refund covers only what was actually cancelled.
+      parameters:
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Cancellation applied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageBatchCancelResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/app/image-forensics/process-from-url:
+    post:
+      tags:
+      - Image
+      operationId: imageForensicsProcessFromUrl
+      summary: Analyze an image from a URL
+      description: Analyze an image fetched from a public URL — a direct image link, or a social or media page, in which case the image is extracted automatically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: HTTPS URL of the image or the page that contains it.
+                  examples:
+                  - https://example.com/photo.jpg
+                externalId:
+                  type: string
+                  description: Optional caller-provided ID.
+              required:
+              - url
+      responses:
+        '200':
+          description: Analysis complete.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageForensicsResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/image-forensics/credit-info:
+    get:
+      tags:
+      - Image
+      operationId: imageForensicsCreditInfo
+      summary: Get image credits and limits
+      description: 'Read the credit balance and the current image limits: cost per image, max file size and allowed formats, plus whether the batch tier is available and what it costs. Read these rather than hard-coding the defaults — they are account settings and can change. Any valid API key may call this; no scope is required.'
+      responses:
+        '200':
+          description: Balance and limits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageForensicsCreditInfo'
+              example:
+                currentBalance: 480
+                creditCostPerImage: 1
+                canUseFeature: true
+                maxFileSizeMB: 50
+                allowedFileFormats: jpg,jpeg,png,webp,heic,heif,tiff
+                canUseBatch: true
+                batchCreditCostPerImage: 1
+                batchMaxSize: 100
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/voice-analysis/process:
+    post:
+      tags:
+      - Audio
+      operationId: voiceAnalysisProcess
+      summary: Analyze an audio file
+      description: Analyze an audio file. By default (input.WorkflowType 4) this detects whether a voice is AI- generated or cloned; other workflows transcribe speech, run intelligence analysis, or combine both. Max 50 MB per file; formats wav, mp3, flac, m4a, opus.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                audioFile:
+                  type: string
+                  format: binary
+                  description: The audio file to analyze.
+                input.WorkflowType:
+                  $ref: '#/components/schemas/VoiceWorkflowType'
+                input.TextInput:
+                  type: string
+                  description: Text to analyze for the Intelligence or Combined workflows (max 50,000 chars).
+                input.ContextHints:
+                  type: string
+                  description: Optional context to guide analysis (max 500 chars).
+                sourceUrl:
+                  type: string
+                  description: Optional source URL of the audio, recorded for your own auditing.
+              required:
+              - audioFile
+      responses:
+        '200':
+          description: Analysis complete.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceAnalysisResponse'
+              example:
+                isSuccessful: true
+                errorMessage: null
+                workflowType: AiDetectionOnly
+                transcript: null
+                analysis: null
+                contextUsed: null
+                isAiDetected: true
+                detectionConfidence: 0.93
+                detectionClassification: fake
+                processingTimeMs: 2110
+                creditsUsed: 1
+                metadata:
+                  provider: raid_1b
+                  detection_method: raid_1b_llr_global_mean
+                  calibration_version: allaug_ep2_qmf_2026-09-01
+                  score: 0.994
+                  score_basis: percentile_vs_genuine
+                  p_fake: 0.31
+                  probability_calibrated: false
+                  threshold_calibrated: true
+                  threshold_global_tau: -4.93
+                  global_llr_mean: -7.6
+                  threshold_fired_global: true
+                  overall_result: fake
+                  total_chunks: 2
+                  real_chunks: 0
+                  fake_chunks: 2
+                  low_confidence: false
+                  truncated: false
+                  audio_total_s: 6.2
+                  audio_analyzed_s: 6.2
+                  chunks:
+                  - index: 0
+                    chunk: 0-4s
+                    result: fake
+                    confidence: 0.91
+                    score: 0.29
+                    start_s: 0
+                    end_s: 4
+                    llr: -7.1
+                  - index: 1
+                    chunk: 2-6s
+                    result: fake
+                    confidence: 0.95
+                    score: 0.33
+                    start_s: 2
+                    end_s: 6
+                    llr: -8.1
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/voice-analysis/process-from-url:
+    post:
+      tags:
+      - Audio
+      operationId: voiceAnalysisProcessFromUrl
+      summary: Analyze audio from a URL
+      description: Analyze audio fetched from a public URL — a direct audio link, or a video or social page whose audio track is extracted automatically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: HTTPS URL of the audio, or of a page/video whose audio is extracted.
+                workflowType:
+                  $ref: '#/components/schemas/VoiceWorkflowType'
+                textInput:
+                  type: string
+                contextHints:
+                  type: string
+              required:
+              - url
+      responses:
+        '200':
+          description: Analysis complete.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceAnalysisResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/voice-analysis/credit-info:
+    get:
+      tags:
+      - Audio
+      operationId: voiceAnalysisCreditInfo
+      summary: Get audio credits and limits
+      description: 'Read the credit balance and the current audio limits: what each workflow costs, which ones the balance currently covers, max file size, allowed formats and the batch limit. Any valid API key may call this; no scope is required.'
+      responses:
+        '200':
+          description: Balance and limits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceAnalysisCreditInfo'
+              example:
+                tenantCredits: 480
+                transcriptionCostPerCall: 1
+                intelligenceCostPerCall: 2
+                combinedCost: 3
+                aiDetectionCostPerCall: 1
+                canUseTranscription: true
+                canUseIntelligence: true
+                canUseCombined: true
+                canUseAiDetection: true
+                maxFileSizeMB: 50
+                allowedFileFormats: wav,mp3,flac,m4a,opus
+                canUseBatchUpload: true
+                maxBatchSize: 10
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/video-forensics/submit:
+    post:
+      tags:
+      - Video
+      operationId: videoForensicsSubmit
+      summary: Submit a video for analysis
+      description: Submit a video for deepfake and AI-generation analysis. Returns a jobId immediately; poll the job until its status is Completed. Max 100 MB per file; formats mp4, mov, avi, mkv, webm.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The video file to analyze.
+                clientDurationSeconds:
+                  type: number
+                  format: double
+                  description: Video duration in seconds (read from the file by your client). Recommended so credits are reserved accurately.
+                sourceUrl:
+                  type: string
+                  description: Optional source URL of the video, for your own auditing.
+              required:
+              - file
+      responses:
+        '200':
+          description: Job accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoSubmitResponse'
+              example:
+                jobId: 9a8b7c6d-1234-5678-90ab-cdef12345678
+                creditsReserved: 24
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/video-forensics/submit-from-url:
+    post:
+      tags:
+      - Video
+      operationId: videoForensicsSubmitFromUrl
+      summary: Submit a video from a URL
+      description: Submit a video fetched from a public URL — a direct video link or a supported hosting page. Returns a jobId to poll.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: HTTPS URL of the video or hosting page.
+                clientDurationSeconds:
+                  type: number
+                  format: double
+                  description: Optional client-probed duration in seconds.
+              required:
+              - url
+      responses:
+        '200':
+          description: Job accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoSubmitResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/video-forensics/jobs/{id}:
+    get:
+      tags:
+      - Video
+      operationId: videoForensicsGetJob
+      summary: Get a video analysis job
+      description: Poll the status and, once complete, the result of a submitted video job.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The `jobId` returned by submit.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The current job state. `result` is populated only when `status` is `Completed`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoJob'
+              example:
+                id: 9a8b7c6d-1234-5678-90ab-cdef12345678
+                fileName: clip.mp4
+                fileSizeBytes: 18452310
+                durationSeconds: 42.5
+                status: Completed
+                progress: 100
+                statusMessage: null
+                creditsReserved: 24
+                creditsUsed: 24
+                framesAnalyzed: 128
+                processingTimeMs: 38120
+                errorMessage: null
+                createdAt: '2026-06-07T12:30:00Z'
+                modifiedAt: '2026-06-07T12:30:39Z'
+                result:
+                  verdict: ai_generated
+                  confidence: 0.88
+                  isAiGenerated: true
+                  framesAnalyzed: 128
+                  durationSeconds: 42.5
+                  summary: Multiple frames show generative-model artifacts consistent with AI synthesis.
+                  hasDetailedReport: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/app/video-forensics/credit-info:
+    get:
+      tags:
+      - Video
+      operationId: videoForensicsCreditInfo
+      summary: Get video credits and limits
+      description: 'Read the credit balance and the current video limits: cost per frame, frames analyzed per second, the longest video the plan allows and what it costs, max file size, allowed formats, and today''s usage against the daily cap. Any valid API key may call this; no scope is required.'
+      responses:
+        '200':
+          description: Balance and limits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoForensicsCreditInfo'
+              example:
+                currentBalance: 480
+                creditCostPerFrame: 1
+                maxVideoLengthSeconds: 300
+                maxCreditsPerVideoDerived: 300
+                framesPerSecondToAnalyze: 1
+                maxFileSizeMB: 100
+                allowedFileFormats: mp4,mov,avi,mkv,webm
+                maxVideosPerDay: 20
+                videosUsedToday: 3
+                canUseFeature: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/document-analysis/analyze:
+    post:
+      tags:
+      - Document
+      operationId: documentAnalysisAnalyze
+      summary: Analyze a document
+      description: 'Upload a PDF or an image and get back one unified analysis: a document-level forensics verdict plus per-page tampering and AI-generation results, reconciled into a single headline verdict. A full analysis runs for minutes, so this endpoint submits the job, holds the request briefly, then returns 202 with the record as it stands — 202 is the expected outcome, not an error. Poll the analysis by id until its status is completed or failed. Accepted formats are PDF, PNG, JPEG and WebP; requires an API key with the document-image scope. The Document analysis guide walks through the polling loop and how to read the result.'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The document to analyze — a PDF, PNG, JPEG or WebP file.
+                docType:
+                  $ref: '#/components/schemas/DocumentType'
+              required:
+              - file
+      responses:
+        '200':
+          description: 'The analysis reached a terminal state inside the wait budget — `status` is `completed` (or `failed` when no verdict could be produced). Uncommon: most documents take longer than the budget and land on the `202` path.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentAnalysis'
+              example:
+                id: 9d1f6a2c-8b4e-4f21-9a77-0c2b5e6d3a10
+                docId: t-3f9c1a2b4d5e6f708192a3b4c5d6e7f8-u1a2b3c4d5e6f7a8b9c0d1e
+                fileName: invoice-april.pdf
+                mediaKind: pdf
+                docType: invoice_po
+                status: completed
+                forensicsStatus: completed
+                pagesStatus: completed
+                fusedVerdict: reject
+                fusedProbability: 0.94
+                fusionRationale: The document-level forensic checks found strong evidence of tampering. Page 2 shows signs of localized editing (tampering score 91%).
+                stageErrorsJson: null
+                pagesTotal: 2
+                pagesCompleted: 2
+                pagesFailed: 0
+                creditsUsed: 1
+                refundReason: null
+                completedAt: '2026-07-29T10:14:52Z'
+                docTypeConfidence: 0.97
+                processingTimeMs: 84213
+                processedAt: '2026-07-29T10:14:50Z'
+                hasOriginal: true
+                verdict:
+                  docId: t-3f9c1a2b4d5e6f708192a3b4c5d6e7f8-u1a2b3c4d5e6f7a8b9c0d1e
+                  docType: invoice_po
+                  docTypeConfidence: 0.97
+                  tampering:
+                    score: 0.88
+                    calibratedProbability: 0.91
+                    reliability: 0.86
+                    softScoreCalibrated: true
+                    findings:
+                    - type: xray_scanned_redaction
+                      expected: null
+                      got: null
+                      bbox:
+                      - 0.12
+                      - 0.44
+                      - 0.55
+                      - 0.52
+                      page: 2
+                      confidence: 0.9
+                      note: Painted-over region recovered.
+                    evidenceUris:
+                    - gs://raid-ai-evidence/t-3f9c.../page-2.png
+                  consistency:
+                    score: 0.7
+                    calibratedProbability: 0.74
+                    reliability: 0.8
+                    softScoreCalibrated: true
+                    findings:
+                    - type: iban_invalid_checksum
+                      expected: valid checksum
+                      got: checksum mismatch
+                      bbox:
+                      - 0.61
+                      - 0.7
+                      - 0.92
+                      - 0.74
+                      page: 1
+                      confidence: 1.0
+                      note: null
+                    evidenceUris: []
+                  anomaly: null
+                  fusedVerdict: reject
+                  fusedProbability: 0.91
+                  fusionRationale: 'reject: RED hard rule(s) fired: iban_invalid_checksum (checksum mismatch)'
+                  pipelineVersions:
+                    forensics: 1.4.0
+                  processedAt: '2026-07-29T10:14:50Z'
+                  latencyMs: 84213
+                pages:
+                - pageNumber: 1
+                  verdict: authentic
+                  localizedEditing: false
+                  editingScore: 0.08
+                  aiStatus: completed
+                  aiVerdict: real
+                  aiConfidence: 0.96
+                  errorCode: null
+                  completedAt: '2026-07-29T10:14:40Z'
+                  editedRegions: []
+                  pageWidth: 1600
+                  pageHeight: 2263
+                  meanConfidence: 0.82
+                  threshold: 0.5
+                  hasImage: true
+                - pageNumber: 2
+                  verdict: edited
+                  localizedEditing: true
+                  editingScore: 0.91
+                  aiStatus: skipped_edited
+                  aiVerdict: null
+                  aiConfidence: null
+                  errorCode: null
+                  completedAt: '2026-07-29T10:14:48Z'
+                  editedRegions:
+                  - x: 192
+                    y: 995
+                    width: 688
+                    height: 181
+                    score: 0.93
+                    meanScore: 0.71
+                    areaFraction: 0.034
+                  pageWidth: 1600
+                  pageHeight: 2263
+                  meanConfidence: 0.88
+                  threshold: 0.5
+                  hasImage: true
+        '202':
+          description: '**The expected outcome.** The analysis is still running server-side; the body is the same record with whatever pages have finished so far — a `202` always carries the partial record, never an empty "come back later". Poll `GET /api/app/document-analysis/{id}` (the `Location` header carries the exact URL) until `status` is `completed` or `failed`. Clients behind a proxy that cuts long-held responses may see the connection drop before this lands — retrying the upload would charge a second credit, so fetch the record instead.'
+          headers:
+            Location:
+              description: URL of the record — `GET /api/app/document-analysis/{id}`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentAnalysis'
+              example:
+                id: 9d1f6a2c-8b4e-4f21-9a77-0c2b5e6d3a10
+                docId: t-3f9c1a2b4d5e6f708192a3b4c5d6e7f8-u1a2b3c4d5e6f7a8b9c0d1e
+                fileName: invoice-april.pdf
+                mediaKind: pdf
+                docType: ''
+                status: processing
+                forensicsStatus: processing
+                pagesStatus: processing
+                fusedVerdict: ''
+                fusedProbability: 0
+                fusionRationale: ''
+                stageErrorsJson: null
+                pagesTotal: 2
+                pagesCompleted: 1
+                pagesFailed: 0
+                creditsUsed: 1
+                refundReason: null
+                completedAt: null
+                docTypeConfidence: 0
+                processingTimeMs: 0
+                processedAt: null
+                hasOriginal: true
+                verdict: null
+                pages:
+                - pageNumber: 1
+                  verdict: authentic
+                  localizedEditing: false
+                  editingScore: 0.08
+                  aiStatus: completed
+                  aiVerdict: real
+                  aiConfidence: 0.96
+                  errorCode: null
+                  completedAt: '2026-07-29T10:14:40Z'
+                  editedRegions: []
+                  pageWidth: 1600
+                  pageHeight: 2263
+                  meanConfidence: 0.82
+                  threshold: 0.5
+                  hasImage: true
+        '400':
+          $ref: '#/components/responses/DocumentValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/CreditLimitReached'
+        '403':
+          $ref: '#/components/responses/DocumentForbidden'
+  /api/app/document-analysis/{id}:
+    get:
+      tags:
+      - Document
+      operationId: documentAnalysisGet
+      summary: Get a document analysis
+      description: 'Fetch one analysis by id. This is the poll target after analyze returns 202: the pages array grows and the forensics verdict fills in across successive calls, with the body shape identical at every stage. Stop when status is completed or failed; polling every few seconds is enough for a job that runs in minutes.'
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The analysis `id` returned by `analyze`.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The analysis, partial or terminal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentAnalysis'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/app/document-analysis/{id}/pages/{pageNumber}/image:
+    get:
+      tags:
+      - Document
+      operationId: documentAnalysisGetPageImage
+      summary: Get a page image
+      description: Stream the rendered page raster as a PNG. This is the exact image a page's region coordinates are measured against, so tampered-region boxes can be drawn straight onto it. Available while the page reports hasImage true; anything else returns 404.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: pageNumber
+        in: path
+        required: true
+        description: 1-based page number.
+        schema:
+          type: integer
+          minimum: 1
+      responses:
+        '200':
+          description: The page raster.
+          headers:
+            Cache-Control:
+              description: '`private, max-age=300`'
+              schema:
+                type: string
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/app/document-analysis/{id}/evidence:
+    get:
+      tags:
+      - Document
+      operationId: documentAnalysisGetEvidence
+      summary: Get an evidence crop
+      description: Stream one forensics evidence raster for a feature lane and page. Storage URIs are never fetchable directly and are never accepted as input — the URI is resolved server-side from this analysis's own verdict, so a crop is addressed by lane, page and optionally a recovered- redaction name. Any miss returns 404.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: feature
+        in: query
+        required: true
+        description: Which feature lane's evidence to read.
+        schema:
+          type: string
+          enum:
+          - tampering
+          - consistency
+          - anomaly
+      - name: page
+        in: query
+        required: false
+        description: 1-based page number.
+        schema:
+          type: integer
+          default: 0
+      - name: redaction
+        in: query
+        required: false
+        description: Name of a recovered-redaction crop instead of the page raster — the `redaction-p{page}-….png` file name as it appears in the lane's `evidenceUris`.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The evidence raster.
+          headers:
+            Cache-Control:
+              description: '`private, max-age=300`'
+              schema:
+                type: string
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/app/document-analysis/credit-info:
+    get:
+      tags:
+      - Document
+      operationId: documentAnalysisCreditInfo
+      summary: Get credit balance and upload limits
+      description: 'Read the credit balance, the per-document cost and the current upload constraints: size ceilings, the batch limit and the recommended request concurrency. Read these rather than hard- coding the defaults — they are account settings and can change without an SDK or client release.'
+      responses:
+        '200':
+          description: Balance and constraints.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentAnalysisCreditInfo'
+              example:
+                currentBalance: 480
+                creditCostPerDocument: 1
+                maxBatchFiles: 5
+                analyzeConcurrency: 3
+                maxFileSizeMB: 25
+                maxImageSizeMB: 10
+                userHeadroomRemaining: null
+                canUseFeature: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/fact-checking/submit:
+    post:
+      tags:
+      - Fact-Checking
+      operationId: factCheckingSubmit
+      summary: Submit media for fact-checking
+      description: Submit an image, audio, or video for fact-checking against the public record. Returns a jobId; poll the job until its status is Completed. Max 50 MB per file.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The media file to fact-check.
+                modality:
+                  $ref: '#/components/schemas/Modality'
+                userContext:
+                  type: string
+                  description: Optional context (e.g. claimed source or background); echoed back in the result.
+              required:
+              - file
+              - modality
+      responses:
+        '200':
+          description: Job accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobSubmitResponse'
+              example:
+                jobId: 7c6d5e4f-aaaa-bbbb-cccc-ddddeeeeffff
+                status: Queued
+                creditsReserved: 24
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/fact-checking/submit-from-url:
+    post:
+      tags:
+      - Fact-Checking
+      operationId: factCheckingSubmitFromUrl
+      summary: Submit media for fact-checking from a URL
+      description: Fact-check media fetched from a public URL — an article, a social post, or a direct media link.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: HTTPS URL of the media or the page containing it.
+                modality:
+                  $ref: '#/components/schemas/Modality'
+                userContext:
+                  type: string
+              required:
+              - url
+              - modality
+      responses:
+        '200':
+          description: Job accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobSubmitResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/app/fact-checking/jobs/{id}:
+    get:
+      tags:
+      - Fact-Checking
+      operationId: factCheckingGetJob
+      summary: Get a fact-checking job
+      description: Poll the status and, once complete, the result of a submitted fact-checking job.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        description: The `jobId` returned by submit.
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The current job state. `result` is populated only when `status` is `Completed`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FactCheckJob'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/app/fact-checking/credit-info:
+    get:
+      tags:
+      - Fact-Checking
+      operationId: factCheckingCreditInfo
+      summary: Get fact-checking credits and limits
+      description: 'Read the credit balance and the current fact-checking limits: the cost per modality, the per-job credit cap, max file size and allowed formats. Any valid API key may call this; no scope is required.'
+      responses:
+        '200':
+          description: Balance and limits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FactCheckingCreditInfo'
+              example:
+                currentBalance: 480
+                creditCostPerImage: 5
+                creditCostPerAudioMinute: 3
+                creditCostPerVideoMinute: 8
+                maxCreditsPerJob: 60
+                maxFileSizeMB: 50
+                allowedFileFormats: jpg,jpeg,png,webp,mp3,wav,m4a,mp4,mov,webm
+                canUseFeature: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /health:
+    get:
+      tags:
+      - System Management
+      operationId: healthCheck
+      summary: Health check
+      description: Liveness and readiness probe. Returns plain text and requires no authentication.
+      security: []
+      responses:
+        '200':
+          description: The service is healthy.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: Healthy
+        '503':
+          description: The service is unhealthy.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: Unhealthy
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: 'Send your secret API token as a bearer token in the `Authorization` header:
+
+        `Authorization: Bearer <token>`. Keep it server-side and never expose it in client code.
+
+        '
+  responses:
+    ValidationError:
+      description: The request was malformed or a file failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            fileTooLarge:
+              summary: File too large
+              value:
+                error:
+                  code: IMAGE_FORENSICS:FILE_TOO_LARGE
+                  message: File photo.jpg exceeds the maximum size of 50 MB.
+            unsupportedFormat:
+              summary: Unsupported format
+              value:
+                error:
+                  code: IMAGE_FORENSICS:UNSUPPORTED_FORMAT
+                  message: Unsupported file format. Allowed — jpg, jpeg, png, webp, heic, heif, tiff.
+    Unauthorized:
+      description: The bearer token is missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            unauthorized:
+              value:
+                error:
+                  code: UNAUTHORIZED
+                  message: Invalid or missing API token.
+    NotFound:
+      description: The requested resource (e.g. job) was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notFound:
+              value:
+                error:
+                  code: NOT_FOUND
+                  message: Job not found.
+    DocumentValidationError:
+      description: The upload was rejected before any work ran — no credit is charged. Note the body is a single `error` string, not the `{ code, message }` envelope the other modalities use.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/DocumentError'
+          examples:
+            unsupportedFormat:
+              summary: Unsupported format
+              value:
+                error: Unsupported file. Upload a PDF, PNG, JPEG or WebP.
+            fileTooLarge:
+              summary: File too large
+              value:
+                error: File exceeds the max size of 25 MB
+            tooManyPages:
+              summary: Page cap exceeded
+              value:
+                error: Document has 34 pages; the maximum allowed is 20
+            insufficientCredits:
+              summary: Not enough credits
+              value:
+                error: Insufficient credits. This analysis costs 1 credit(s).
+    CreditLimitReached:
+      description: The calling user has reached their own credit cap (the account may still have credits). API tokens carry no per-user cap and never receive this — for a token, an exhausted balance is a `400` instead.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PaywallError'
+          examples:
+            userCreditLimit:
+              value:
+                code: USER_CREDIT_LIMIT_REACHED
+                feature: document-analysis
+                redirectUrl: null
+                message: You have reached your credit limit. Ask an account administrator to raise it.
+    DocumentForbidden:
+      description: Either the API token is not granted the scope this endpoint requires, or document analysis is not enabled for the account. When it is not enabled, submit is refused here and the read endpoints return `404` — the feature is hidden, not paywalled.
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/Error'
+            - $ref: '#/components/schemas/DocumentError'
+          examples:
+            scopeMissing:
+              summary: Token missing the scope
+              value:
+                error:
+                  code: api_key.scope_missing
+                  message: This API key is not authorized for the 'document-image' scope.
+            featureDisabled:
+              summary: Feature not enabled for the account
+              value:
+                error: Document Analysis is not enabled for this tenant
+  schemas:
+    Error:
+      type: object
+      description: Standard error envelope returned by every endpoint on failure.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+              examples:
+              - IMAGE_FORENSICS:FILE_TOO_LARGE
+            message:
+              type: string
+              description: Human-readable explanation, safe to log.
+            sourceHost:
+              type:
+              - string
+              - 'null'
+              description: For URL-based endpoints, the host that could not be resolved.
+            userMessage:
+              type:
+              - string
+              - 'null'
+              description: A display-friendly variant of the message (URL-based endpoints only).
+          required:
+          - code
+          - message
+      required:
+      - error
+    Verdict:
+      type: string
+      description: 'Overall classification of the media.
+
+        - `real` — no manipulation detected
+
+        - `ai_generated` — produced by a generative model
+
+        - `ai_edited` — a real asset modified with AI tools
+
+        - `digitally_edited` — conventional (non-AI) editing
+
+        - `unknown` — the analysis was inconclusive
+
+        '
+      enum:
+      - real
+      - ai_generated
+      - ai_edited
+      - digitally_edited
+      - unknown
+    JobStatus:
+      type: string
+      description: Lifecycle state of an asynchronous job.
+      enum:
+      - Queued
+      - Processing
+      - Completed
+      - Failed
+      - Cancelled
+    Modality:
+      type: string
+      description: The kind of media being submitted.
+      enum:
+      - image
+      - audio
+      - video
+    VoiceWorkflowType:
+      type: integer
+      description: 'Which voice workflow to run:
+
+        - `1` — Transcription only
+
+        - `2` — Intelligence (text analysis) only
+
+        - `3` — Combined transcription + intelligence
+
+        - `4` — AI-voice detection only (default)
+
+        '
+      enum:
+      - 1
+      - 2
+      - 3
+      - 4
+      default: 4
+    Generators:
+      type:
+      - object
+      - 'null'
+      additionalProperties:
+        type: number
+        format: float
+      description: 'Generator attribution as a map of generator name → score (0–1), e.g.
+
+        `{ "midjourney": 0.95 }`. Keys are returned dynamically by the detector.
+
+        Null on basic plans.
+
+        '
+    MetadataFinding:
+      type: object
+      description: One user-facing metadata finding derived from the image's embedded metadata.
+      properties:
+        kind:
+          type: string
+          description: 'Stable machine key for the finding. Current kinds: `editingSoftware`,
+
+            `cameraInfo`, `createdDate`, `modifiedDate`, `gpsPresent` (presence only —
+
+            coordinates are never returned), and `noMetadata` (the image carries no
+
+            metadata, common for AI generated or re-saved images). New kinds may be
+
+            added over time.
+
+            '
+        value:
+          type:
+          - string
+          - 'null'
+          description: Optional display value, e.g. `Adobe Photoshop 24.0` or `Canon EOS R5`.
+        significance:
+          type: string
+          enum:
+          - info
+          - notable
+          - warning
+          description: How strongly this finding should weigh in a manipulation assessment.
+      required:
+      - kind
+      - significance
+    ImageBatchSubmitResponse:
+      type: object
+      description: Acknowledgement that images were queued. Contains no verdicts.
+      properties:
+        batchId:
+          type: string
+          format: uuid
+          description: Use this to poll status and fetch results.
+        status:
+          $ref: '#/components/schemas/ImageBatchStatus'
+        itemCount:
+          type: integer
+          description: Number of images queued.
+        creditsCharged:
+          type: integer
+          description: Total deducted now. Batch charges on acceptance, not on completion.
+        creditsPerItem:
+          type: integer
+          description: Rate applied to this batch, after any plan-specific pricing.
+        realtimeCreditsPerItem:
+          type: integer
+          description: The realtime rate, for comparison.
+        estimatedProcessingWindow:
+          type:
+          - string
+          - 'null'
+          description: Human-readable hint about when the batch will be processed.
+        statusUrl:
+          type: string
+          description: Relative path to poll for status.
+        externalId:
+          type:
+          - string
+          - 'null'
+    ImageBatchStatus:
+      type: string
+      enum:
+      - Accepted
+      - Processing
+      - Completed
+      - CompletedWithErrors
+      - Cancelled
+      - Failed
+      description: Batch-level state. `CompletedWithErrors` means the batch finished but at least one image failed — those images were refunded. The last four are terminal.
+    ImageBatchItemStatus:
+      type: string
+      enum:
+      - Queued
+      - Processing
+      - Completed
+      - Failed
+      - Cancelled
+      description: Per-image state within a batch.
+    ImageBatch:
+      type: object
+      properties:
+        batchId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ImageBatchStatus'
+        itemCount:
+          type: integer
+        completedCount:
+          type: integer
+        failedCount:
+          type: integer
+        cancelledCount:
+          type: integer
+        queuedCount:
+          type: integer
+        processingCount:
+          type: integer
+        progressPercent:
+          type: integer
+          description: 0–100, derived from the per-image counts.
+        creditsCharged:
+          type: integer
+        creditsPerItem:
+          type: integer
+        creditsRefunded:
+          type: integer
+          description: Credits returned for images that failed or were cancelled.
+        externalId:
+          type:
+          - string
+          - 'null'
+        acceptedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        completedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        isTerminal:
+          type: boolean
+          description: True once the batch will not change again. Stop polling.
+    ImageBatchPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageBatch'
+        skip:
+          type: integer
+        take:
+          type: integer
+        totalCount:
+          type: integer
+    ImageBatchResult:
+      type: object
+      properties:
+        itemId:
+          type: string
+          format: uuid
+        ordinal:
+          type: integer
+          description: Position in the original submission, so results can be matched to inputs.
+        fileName:
+          type: string
+        status:
+          $ref: '#/components/schemas/ImageBatchItemStatus'
+        errorCode:
+          type:
+          - string
+          - 'null'
+          description: Set when the image could not be analyzed. Its credits were refunded.
+        result:
+          oneOf:
+          - $ref: '#/components/schemas/ImageResult'
+          - type: 'null'
+          description: The verdict, once analyzed. Deep analysis, generator attribution and heatmap are always null on this path — those are realtime-only.
+    ImageBatchResultPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageBatchResult'
+        skip:
+          type: integer
+        take:
+          type: integer
+        totalCount:
+          type: integer
+    ImageBatchCancelResult:
+      type: object
+      properties:
+        cancelledItems:
+          type: integer
+          description: Images that were still waiting and have now been cancelled.
+        creditsRefunded:
+          type: integer
+          description: Credits returned for those images only.
+    ImageDeepAnalysis:
+      type:
+      - object
+      - 'null'
+      description: 'Detailed analysis narrative and findings. Null on basic plans and when the
+
+        detection ran without deep analysis.
+
+        '
+      properties:
+        agreement:
+          type:
+          - string
+          - 'null'
+          description: How strongly the detection signals agree with each other.
+        confidence:
+          type:
+          - string
+          - 'null'
+          description: Narrative confidence statement for the deep analysis.
+        keyIndicators:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: The strongest signals behind the verdict.
+        detailedReasoning:
+          type:
+          - string
+          - 'null'
+          description: Full analysis narrative.
+        visualPatterns:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: Visual artifacts and patterns observed in the image.
+        recommendations:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: Suggested next steps for verifying the image.
+        metadataFindings:
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/MetadataFinding'
+          description: Curated findings from the image's embedded metadata.
+    ImageResult:
+      type: object
+      properties:
+        id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Stable record ID for this image (null if the image failed to process).
+        fileName:
+          type: string
+          description: Original file name (or a derived name for URL inputs).
+        verdict:
+          $ref: '#/components/schemas/Verdict'
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Confidence in the verdict, from 0 to 1.
+          examples:
+          - 0.972
+        isManipulated:
+          type: boolean
+          description: Convenience flag — true when `verdict` is anything other than `real`.
+        creditsUsed:
+          type: integer
+          description: Credits charged for this image.
+        processingTimeMs:
+          type: integer
+          format: int64
+          description: Server-side processing time in milliseconds.
+        errorMessage:
+          type:
+          - string
+          - 'null'
+          description: Failure reason when this image could not be analyzed; otherwise null.
+        createdAt:
+          type: string
+          format: date-time
+        deepfakeScore:
+          type:
+          - number
+          - 'null'
+          format: float
+          description: Likelihood the image is a deepfake (0–1). Null on basic plans.
+        generators:
+          $ref: '#/components/schemas/Generators'
+        deepAnalysis:
+          $ref: '#/components/schemas/ImageDeepAnalysis'
+        faceAnalysis:
+          anyOf:
+          - $ref: '#/components/schemas/ImageFaceAnalysis'
+          - type: 'null'
+          description: 'Face level analysis of the detection. Present only when face details are enabled
+
+            on your account — contact us to enable it. Null otherwise, and null on images
+
+            where the analysis did not run face by face.
+
+            '
+      required:
+      - fileName
+      - verdict
+      - confidence
+      - isManipulated
+      - creditsUsed
+      - processingTimeMs
+      - createdAt
+    ImageFaceAnalysis:
+      type: object
+      description: 'How the verdict was reached at face level. When `stage` is `face_crop`, every
+
+        detected face was scored individually and `faces` lists them (largest first) with
+
+        `decidingFace` pointing at the face that determined the verdict. When the verdict
+
+        was decided on the whole image (`full_image`, or `full_image_no_face` when no face
+
+        was detected), `decidingFace` and `faces` are null by design.
+
+        '
+      properties:
+        stage:
+          type: string
+          enum:
+          - full_image
+          - face_crop
+          - full_image_no_face
+          - raw
+          description: Which analysis stage decided the verdict.
+        fullImageScore:
+          type:
+          - number
+          - 'null'
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Whole image synthetic score from the first analysis stage.
+        decidingFace:
+          anyOf:
+          - $ref: '#/components/schemas/ImageFace'
+          - type: 'null'
+          description: The face that determined the verdict; null when the whole image decided.
+        faces:
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/ImageFace'
+          description: Every detected face, largest first; null when the whole image decided.
+      required:
+      - stage
+    ImageFace:
+      type: object
+      description: One detected face, located in original image pixels.
+      properties:
+        x:
+          type: number
+          description: Left edge of the face rectangle, in pixels.
+        y:
+          type: number
+          description: Top edge of the face rectangle, in pixels.
+        width:
+          type: number
+        height:
+          type: number
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Confidence that this region is a face.
+        deepfakeScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Likelihood this face is synthetic, from 0 to 1.
+      required:
+      - x
+      - y
+      - width
+      - height
+      - confidence
+      - deepfakeScore
+    ImageForensicsResponse:
+      type: object
+      properties:
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageResult'
+        totalCreditsUsed:
+          type: integer
+        totalProcessingTimeMs:
+          type: integer
+          format: int64
+        isSuccessful:
+          type: boolean
+          description: True when at least one image was analyzed successfully.
+        errorMessage:
+          type:
+          - string
+          - 'null'
+        hasDetailedReport:
+          type: boolean
+          description: 'True when the response includes detailed fields (`generators`, `deepfakeScore`,
+
+            `deepAnalysis`). False on basic plans, where those fields are null.
+
+            '
+      required:
+      - images
+      - totalCreditsUsed
+      - totalProcessingTimeMs
+      - isSuccessful
+      - hasDetailedReport
+    VoiceAnalysisResponse:
+      type: object
+      properties:
+        isSuccessful:
+          type: boolean
+        errorMessage:
+          type:
+          - string
+          - 'null'
+        workflowType:
+          type: string
+          description: 'Name of the workflow that ran: `TranscriptionOnly`, `IntelligenceOnly`, `Combined` or `AiDetectionOnly`. Requests select the workflow with the numeric `VoiceWorkflowType`; the response echoes its name.'
+        transcript:
+          type:
+          - string
+          - 'null'
+          description: Transcribed text. Populated for Transcription and Combined workflows.
+        analysis:
+          type:
+          - string
+          - 'null'
+          description: Intelligence analysis text. Populated for Intelligence and Combined workflows.
+        contextUsed:
+          type:
+          - string
+          - 'null'
+          description: The context hints that were applied, if any.
+        isAiDetected:
+          type:
+          - boolean
+          - 'null'
+          description: Whether the voice is AI-generated. Populated for the AI-detection workflow.
+        detectionConfidence:
+          type:
+          - number
+          - 'null'
+          format: float
+          minimum: 0
+          maximum: 1
+          description: 'How confident the detector is in the verdict it reported in `detectionClassification`, from 0 to 1. It measures how far past the decision boundary the audio landed — **not** the probability that the audio is AI-generated. Read `0.5` as "landed on the boundary, maximally uncertain", not as "50% likely fake", and never derive the opposite verdict''s confidence as `1 - detectionConfidence`: both verdicts are reported at high confidence when they are far from the boundary. Use it to rank and to shade results; it is not a calibrated probability, so don''t present it to end users as a percentage likelihood.'
+        detectionClassification:
+          type:
+          - string
+          - 'null'
+          description: Classification label for detection, e.g. `real`, `suspicious`, or `fake`.
+        processingTimeMs:
+          type: integer
+          format: int64
+        creditsUsed:
+          type: integer
+        metadata:
+          oneOf:
+          - $ref: '#/components/schemas/VoiceDetectionDetails'
+          - type: 'null'
+          description: Workflow metadata. For the AI-detection workflow this is the detector's own detail, typed as `VoiceDetectionDetails`; other workflows carry their own keys here.
+      required:
+      - isSuccessful
+      - workflowType
+      - processingTimeMs
+      - creditsUsed
+    VoiceDetectionDetails:
+      type: object
+      additionalProperties: true
+      description: 'Detection detail for the AI-voice workflow, keyed exactly as the detector reports it (snake_case). Every field is optional: which ones appear depends on the detector the platform runs for your account, and the set can grow without notice. Unknown keys are preserved. Other workflows (transcription, intelligence) carry their own keys here instead.'
+      properties:
+        provider:
+          type: string
+          description: Identifier of the detector that produced this verdict, e.g. `raid_1b`. The platform selects the detector per account; this is an open set — do not hard-code it. Absent on the legacy detector.
+        detection_method:
+          type: string
+          description: How the file verdict was aggregated from per-window scores (detector-specific label).
+        model_version:
+          type: string
+          description: Detector checkpoint identifier, for reproducibility.
+        calibration_version:
+          type: string
+          description: Identifier of the calibration the thresholds came from.
+        threshold_name:
+          type: string
+          description: Name of the operating point the verdict was decided against.
+        response_type:
+          type: string
+          description: Which wire contract the detector response was parsed as.
+        score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: 'Percentile of this clip against the detector''s own reference of genuine speech, with `score_basis` saying how it was derived. 0 = indistinguishable from genuine audio, 1 = more suspicious than all of it. This is the figure to show users and to threshold on: it carries no assumption about how common fakes are, and it means the same thing across detectors. Absent means unknown, never 0.'
+        score_basis:
+          type: string
+          description: How `score` was derived, e.g. `percentile_vs_genuine`. Only read `score` as a percentile when this says so.
+        p_fake:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: 'The detector''s raw fakeness output. While `probability_calibrated` is false this is a monotone ranking, not a probability: a genuine clip can report 0.0009 here and still be near the decision boundary, because the boundary is not at 0.5. Do not display it as a percentage likelihood.'
+        probability_calibrated:
+          type: boolean
+          description: True only when `p_fake` is a calibrated posterior probability. False on current detectors.
+        threshold_calibrated:
+          type: boolean
+          description: True when the decision threshold was fitted on a reference set rather than left at a default.
+        threshold_global_tau:
+          type: number
+          format: double
+          description: The log-likelihood-ratio cut the file-level decision was made against.
+        global_llr_mean:
+          type: number
+          format: double
+          description: Mean log-likelihood ratio over the scored windows; positive leans genuine. `global_llr_mean - threshold_global_tau` is the decision margin.
+        threshold_partial_tau:
+          type: number
+          format: double
+          description: Cut for the partial (worst-windows) rule, when the detector evaluates one.
+        partial_llr_k_lowest_mean:
+          type: number
+          format: double
+          description: Mean LLR of the `partial_k` most fake-leaning windows, measured against `threshold_partial_tau`.
+        partial_k:
+          type: integer
+          description: How many windows the partial statistic was drawn over.
+        threshold_fired_global:
+          type: boolean
+          description: Whether the global rule tripped. Absent means that rule was not evaluated, not that it passed.
+        threshold_fired_partial:
+          type: boolean
+          description: Whether the partial rule tripped. The verdict is fake if either rule fires. Absent means not evaluated.
+        overall_result:
+          type: string
+          description: File-level label as the detector stated it (`real` or `fake`).
+        total_chunks:
+          type: integer
+          description: Windows the audio was split into.
+        real_chunks:
+          type: integer
+          description: Scored windows labelled genuine. Window tallies do not decide the file verdict; the aggregate LLR does.
+        fake_chunks:
+          type: integer
+          description: Scored windows labelled fake.
+        n_chunks_scored:
+          type: integer
+          description: Windows that contributed to the aggregate.
+        n_chunks_excluded:
+          type: integer
+          description: Windows scored but excluded from the aggregate (non-speech).
+        chunks_omitted:
+          type: boolean
+          description: True when the per-window timeline was suppressed for this account, so an empty `chunks` is not "nothing analysed".
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/VoiceDetectionChunk'
+          description: Per-window timeline, in order. May be empty or absent.
+        average_confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Legacy field. Mean window fakeness, kept for compatibility; prefer `score`.
+        max_confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Highest per-window confidence in that window's own verdict.
+        min_confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Lowest per-window confidence in that window's own verdict.
+        low_confidence:
+          type: boolean
+          description: The clip was too short for the verdict to rest on much audio (it was tiled to fill one window). Surface this next to the verdict.
+        truncated:
+          type: boolean
+          description: The file exceeded the analysis ceiling and its tail was never scored; the verdict describes the analysed part only.
+        truncated_s:
+          type: number
+          format: double
+          description: Seconds that were not analysed because of truncation. Present only when something was cut.
+        repeat_tiled:
+          type: boolean
+          description: True when the audio was repeated to fill the analysis window.
+        variable_length:
+          type: boolean
+          description: True when the detector scored the clip in a single variable-length pass instead of fixed windows.
+        audio_total_s:
+          type: number
+          format: double
+          description: Duration of the submitted audio, in seconds.
+        audio_analyzed_s:
+          type: number
+          format: double
+          description: Seconds of audio the detector analysed.
+        total_s:
+          type: number
+          format: double
+          description: Duration of the source file in seconds (companion to `coverage_pct`).
+        analyzed_s:
+          type: number
+          format: double
+          description: Seconds actually analysed (companion to `coverage_pct`).
+        coverage_s:
+          type: number
+          format: double
+          description: Seconds of audio that fell inside some scored window.
+        coverage_pct:
+          type: number
+          format: double
+          description: Share of the whole file that was covered by scored windows, as a percentage.
+        coverage_of_analyzed_pct:
+          type: number
+          format: double
+          description: Share of the analysed span that was covered by scored windows, as a percentage.
+        window_s:
+          type: number
+          format: double
+          description: Window length in seconds.
+        hop_s:
+          type: number
+          format: double
+          description: Hop between consecutive windows in seconds.
+        mode:
+          type: string
+          description: Sampling mode the detector ran (e.g. `sliding`, `random_k`, `full`).
+        inference_s:
+          type: number
+          format: double
+          description: Model inference time in seconds.
+        timestamp_offset_s:
+          type: number
+          format: double
+          description: Present when leading silence was trimmed; add it to window timestamps to map them back onto the original file.
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Run-specific caveats the detector raised. Absent when there are none.
+        mode_notes:
+          type: array
+          items:
+            type: string
+          description: Human-readable notes about how this run was sampled.
+        file_name:
+          type: string
+          description: The file name as received.
+        error_code:
+          type: string
+          description: Machine-readable reason when `isSuccessful` is false (e.g. no clear speech). Open set.
+    VoiceDetectionChunk:
+      type: object
+      additionalProperties: true
+      description: One analysis window of the audio timeline.
+      properties:
+        index:
+          type: integer
+          description: Zero-based position in the timeline.
+        chunk:
+          type: string
+          description: Human-readable time range label, e.g. `0-4s`.
+        result:
+          type: string
+          description: Window label as decided by the detector (`real` or `fake`).
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Confidence in this window's own label, measured as distance past the decision boundary (same semantics as `detectionConfidence`).
+        score:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: This window's raw fakeness (`p_fake`), uncalibrated. Not a probability.
+        start_s:
+          type: number
+          format: double
+          description: Window start in seconds.
+        end_s:
+          type: number
+          format: double
+          description: Window end in seconds.
+        llr:
+          type: number
+          format: double
+          description: Window log-likelihood ratio; positive leans genuine. Absent when the detector did not report one.
+        speech_ratio:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Fraction of the window that contained speech.
+        quality_label:
+          type: string
+          description: Detector's quality label for the window.
+        excluded:
+          type: boolean
+          description: True when this window was scored but left out of the file-level aggregate.
+    JobSubmitResponse:
+      type: object
+      description: Returned when an asynchronous fact-checking job is accepted.
+      properties:
+        jobId:
+          type: string
+          format: uuid
+          description: Identifier to poll for status and results.
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        creditsReserved:
+          type: integer
+          description: Credits held pending completion; confirmed on success and refunded on failure/cancel.
+      required:
+      - jobId
+      - creditsReserved
+    VideoSubmitResponse:
+      type: object
+      description: Returned when a video job is accepted.
+      properties:
+        jobId:
+          type: string
+          format: uuid
+          description: Identifier to poll for status and results.
+        creditsReserved:
+          type: integer
+          description: Credits held pending completion; confirmed on success and refunded on failure/cancel.
+      required:
+      - jobId
+      - creditsReserved
+    VideoResult:
+      type: object
+      description: Populated on a video job once `status` is `Completed`.
+      properties:
+        verdict:
+          $ref: '#/components/schemas/Verdict'
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        isAiGenerated:
+          type: boolean
+        framesAnalyzed:
+          type: integer
+        durationSeconds:
+          type:
+          - number
+          - 'null'
+          format: double
+        summary:
+          type:
+          - string
+          - 'null'
+          description: Short human-readable summary of the finding.
+        hasDetailedReport:
+          type: boolean
+          description: True when a detailed report is available. False on basic plans.
+      required:
+      - verdict
+      - confidence
+      - isAiGenerated
+      - framesAnalyzed
+      - hasDetailedReport
+    VideoJob:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        fileName:
+          type: string
+        fileSizeBytes:
+          type: integer
+          format: int64
+        durationSeconds:
+          type:
+          - number
+          - 'null'
+          format: double
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Percent complete.
+        statusMessage:
+          type:
+          - string
+          - 'null'
+        creditsReserved:
+          type: integer
+        creditsUsed:
+          type: integer
+        framesAnalyzed:
+          type:
+          - integer
+          - 'null'
+        processingTimeMs:
+          type: integer
+          format: int64
+        errorMessage:
+          type:
+          - string
+          - 'null'
+        createdAt:
+          type: string
+          format: date-time
+        modifiedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        result:
+          oneOf:
+          - $ref: '#/components/schemas/VideoResult'
+          - type: 'null'
+          description: Null until the job completes.
+      required:
+      - id
+      - fileName
+      - status
+      - progress
+      - creditsReserved
+      - creditsUsed
+      - processingTimeMs
+      - createdAt
+    ProvenanceUrl:
+      type: object
+      properties:
+        url:
+          type: string
+        pageTitle:
+          type:
+          - string
+          - 'null'
+        firstSeenAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        matchType:
+          type:
+          - string
+          - 'null'
+          description: How the media matched this URL, e.g. `full`, `partial`, `page`, `entity`.
+        relevance:
+          type:
+          - string
+          - 'null'
+          description: Assessed relevance — `high`, `medium`, or `low`.
+      required:
+      - url
+    ProvenanceItem:
+      type: object
+      description: A domain where the media (or closely matching media) was found.
+      properties:
+        domain:
+          type: string
+          examples:
+          - bbc.com
+        tier:
+          type: string
+          description: Source tier — `authoritative`, `news`, `social`, or `unknown`.
+        urls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProvenanceUrl'
+        isEarliestSeen:
+          type: boolean
+          description: True for the earliest-known appearance across the result.
+      required:
+      - domain
+      - tier
+      - urls
+    Claim:
+      type: object
+      description: A checkable claim extracted from audio/video. Null/absent for image jobs.
+      properties:
+        claimText:
+          type: string
+        verbatimQuote:
+          type:
+          - string
+          - 'null'
+        verdict:
+          type:
+          - string
+          - 'null'
+          description: Assessment — `supported`, `contradicted`, `mixed`, or `unverified`.
+        confidence:
+          type:
+          - number
+          - 'null'
+          format: float
+          minimum: 0
+          maximum: 1
+        speaker:
+          type:
+          - string
+          - 'null'
+      required:
+      - claimText
+    FactCheckResult:
+      type: object
+      description: 'Populated on a fact-checking job once `status` is `Completed`. Additional fields may be
+
+        present for detailed reports — clients should ignore unknown fields (see Versioning).
+
+        '
+      properties:
+        modality:
+          $ref: '#/components/schemas/Modality'
+        hasDetailedReport:
+          type: boolean
+        summary:
+          type: string
+          description: One-paragraph synthesis of the finding.
+        provenance:
+          type: array
+          description: Domains where the media was found, grouped by source.
+          items:
+            $ref: '#/components/schemas/ProvenanceItem'
+        claims:
+          type:
+          - array
+          - 'null'
+          description: Extracted claims with verdicts (audio/video only).
+          items:
+            $ref: '#/components/schemas/Claim'
+        transcript:
+          type:
+          - string
+          - 'null'
+          description: Diarized transcript (audio/video only).
+      required:
+      - modality
+      - hasDetailedReport
+      - summary
+      - provenance
+    FactCheckJob:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        modality:
+          $ref: '#/components/schemas/Modality'
+        fileName:
+          type: string
+        fileSizeBytes:
+          type: integer
+          format: int64
+        durationSeconds:
+          type:
+          - number
+          - 'null'
+          format: double
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        statusMessage:
+          type:
+          - string
+          - 'null'
+        creditsReserved:
+          type: integer
+        creditsUsed:
+          type: integer
+        processingTimeMs:
+          type: integer
+          format: int64
+        errorMessage:
+          type:
+          - string
+          - 'null'
+        userContext:
+          type:
+          - string
+          - 'null'
+          description: The context you supplied at submit, echoed back.
+        createdAt:
+          type: string
+          format: date-time
+        modifiedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        result:
+          oneOf:
+          - $ref: '#/components/schemas/FactCheckResult'
+          - type: 'null'
+          description: Null until the job completes.
+      required:
+      - id
+      - modality
+      - fileName
+      - status
+      - progress
+      - creditsReserved
+      - creditsUsed
+      - processingTimeMs
+      - createdAt
+    ImageForensicsCreditInfo:
+      type: object
+      description: Credit balance and the live image-analysis limits for your account.
+      properties:
+        currentBalance:
+          type: integer
+          description: Credits available on the account.
+        creditCostPerImage:
+          type: integer
+          description: Credits charged per image on the realtime tier.
+        canUseFeature:
+          type: boolean
+          description: True when image forensics is enabled for the account AND the balance covers one image.
+        maxFileSizeMB:
+          type: integer
+          description: Maximum size of a single image, in MB.
+        allowedFileFormats:
+          type: string
+          description: Comma-separated list of accepted file extensions.
+        canUseBatch:
+          type: boolean
+          description: True when the batch tier is available. Independent of canUseFeature — realtime analysis can be enabled while batch is not.
+        batchCreditCostPerImage:
+          type: integer
+          description: Credits charged per image on the batch tier. Compare with creditCostPerImage to show the saving.
+        batchMaxSize:
+          type: integer
+          description: Maximum images accepted in one batch submission.
+      required:
+      - currentBalance
+      - creditCostPerImage
+      - canUseFeature
+      - maxFileSizeMB
+      - allowedFileFormats
+    VoiceAnalysisCreditInfo:
+      type: object
+      description: Credit balance and the live audio limits for your account. Audio is priced per workflow, so each workflow carries its own cost and its own affordability flag.
+      properties:
+        tenantCredits:
+          type: integer
+          description: Credits available on the account.
+        transcriptionCostPerCall:
+          type: integer
+          description: Credits charged for the transcription-only workflow.
+        intelligenceCostPerCall:
+          type: integer
+          description: Credits charged for the intelligence-only workflow.
+        combinedCost:
+          type: integer
+          description: Credits charged for the combined transcription + intelligence workflow.
+        aiDetectionCostPerCall:
+          type: integer
+          description: Credits charged for the AI-voice detection workflow (the default).
+        canUseTranscription:
+          type: boolean
+          description: True when that workflow is enabled AND the balance covers one call.
+        canUseIntelligence:
+          type: boolean
+        canUseCombined:
+          type: boolean
+        canUseAiDetection:
+          type: boolean
+        maxFileSizeMB:
+          type: integer
+          description: Maximum size of a single audio file, in MB.
+        allowedFileFormats:
+          type: string
+          description: Comma-separated list of accepted file extensions.
+        canUseBatchUpload:
+          type: boolean
+          description: True when more than one file may be submitted at a time.
+        maxBatchSize:
+          type: integer
+          description: Maximum files accepted in one submission.
+      required:
+      - tenantCredits
+      - maxFileSizeMB
+      - allowedFileFormats
+    VideoForensicsCreditInfo:
+      type: object
+      description: Credit balance and the live video limits for your account. Video is priced per analyzed frame, so cost depends on both duration and the sampling rate.
+      properties:
+        currentBalance:
+          type: integer
+          description: Credits available on the account.
+        creditCostPerFrame:
+          type: integer
+          description: Credits charged per analyzed frame.
+        maxVideoLengthSeconds:
+          type: integer
+          description: Longest video the account may submit, in seconds.
+        maxCreditsPerVideoDerived:
+          type: integer
+          description: What maxVideoLengthSeconds currently costs at the live pricing (length x fps x cost per frame) — provided so a client does not have to repeat the multiplication.
+        framesPerSecondToAnalyze:
+          type: integer
+          description: Frames sampled per second of video. Drives both the credit estimate and the analysis itself.
+        maxFileSizeMB:
+          type: integer
+          description: Maximum size of a single video, in MB.
+        allowedFileFormats:
+          type: string
+          description: Comma-separated list of accepted file extensions.
+        maxVideosPerDay:
+          type: integer
+          description: Daily submission cap for the account. Zero when no daily cap applies.
+        videosUsedToday:
+          type: integer
+          description: Videos submitted so far in the current UTC day, to pair with maxVideosPerDay.
+        canUseFeature:
+          type: boolean
+          description: True when video forensics is enabled for the account AND the balance covers a video.
+      required:
+      - currentBalance
+      - creditCostPerFrame
+      - maxFileSizeMB
+      - allowedFileFormats
+      - canUseFeature
+    FactCheckingCreditInfo:
+      type: object
+      description: Credit balance and the live fact-checking limits for your account. Cost depends on the modality, and on duration for audio and video.
+      properties:
+        currentBalance:
+          type: integer
+          description: Credits available on the account.
+        creditCostPerImage:
+          type: integer
+          description: Credits charged to fact-check one image.
+        creditCostPerAudioMinute:
+          type: integer
+          description: Credits charged per minute of audio.
+        creditCostPerVideoMinute:
+          type: integer
+          description: Credits charged per minute of video.
+        maxCreditsPerJob:
+          type: integer
+          description: Ceiling on what any single job may cost, however long the media is.
+        maxFileSizeMB:
+          type: integer
+          description: Maximum size of a single file, in MB.
+        allowedFileFormats:
+          type: string
+          description: Comma-separated list of accepted file extensions.
+        canUseFeature:
+          type: boolean
+          description: True when fact-checking is enabled for the account AND the balance covers a job.
+      required:
+      - currentBalance
+      - maxFileSizeMB
+      - allowedFileFormats
+      - canUseFeature
+    DocumentType:
+      type: string
+      description: 'Optional hint for the kind of document being submitted. When omitted — or when the value is
+
+        not one of these — the pipeline classifies the document itself.
+
+        - `bank_statement` — a bank account statement
+
+        - `salary_cert` — a salary certificate
+
+        - `invoice_po` — an invoice or purchase order
+
+        - `kyc_id` — a KYC identity document
+
+        - `financials` — company financial statements
+
+        - `plane_ticket` — an airline ticket or itinerary
+
+        '
+      enum:
+      - bank_statement
+      - salary_cert
+      - invoice_po
+      - kyc_id
+      - financials
+      - plane_ticket
+    DocumentStatus:
+      type: string
+      description: 'Lifecycle status — of the analysis as a whole, and of each of its two branches.
+
+        - `processing` — accepted and still running
+
+        - `completed` — finished
+
+        - `failed` — could not be completed
+
+        '
+      enum:
+      - processing
+      - completed
+      - failed
+    DocumentMediaKind:
+      type: string
+      description: 'What the uploaded bytes actually are, derived server-side from the file''s signature rather
+
+        than its name or declared content type.
+
+        - `pdf` — a PDF document
+
+        - `image` — a single document-page image
+
+        '
+      enum:
+      - pdf
+      - image
+    DocumentFusedVerdict:
+      type: string
+      description: 'The headline decision for the whole document — the one field to branch on.
+
+        - `accept` — no evidence of tampering or AI generation
+
+        - `review` — signals worth a human look
+
+        - `reject` — strong evidence the document is not genuine
+
+        - `insufficient_quality` — the document could not be assessed
+
+        '
+      enum:
+      - accept
+      - review
+      - reject
+      - insufficient_quality
+    DocumentRefundReason:
+      type: string
+      description: 'Why the credit for this analysis was returned. Present only on a refunded analysis, where
+
+        `creditsUsed` is `0`.
+
+        - `no_usable_output` — neither branch produced a usable result
+
+        - `stale_timeout` — the analysis stalled and was timed out
+
+        - `submission_failed` — it never started
+
+        '
+      enum:
+      - no_usable_output
+      - stale_timeout
+      - submission_failed
+    DocumentPageVerdict:
+      type: string
+      description: 'A single page''s headline. Deliberately a different vocabulary from the document-level
+
+        `fusedVerdict` — this describes one page, not the decision about the document.
+
+        - `authentic` — no localized edits and no sign of AI generation
+
+        - `edited` — localized editing was found on the page
+
+        - `ai_generated` — the page itself appears to be AI-generated
+
+        '
+      enum:
+      - authentic
+      - edited
+      - ai_generated
+    DocumentPageAiStatus:
+      type: string
+      description: 'Outcome of the page''s AI-generation check. It is additive — it never fails the page, so a
+
+        non-`completed` status is normal and the page verdict still stands.
+
+        - `not_run` — the check did not run
+
+        - `skipped_edited` — skipped because the page was already found to be edited
+
+        - `completed` — a verdict was produced (`aiVerdict`)
+
+        - `failed` — the check could not complete; see `errorCode`
+
+        '
+      enum:
+      - not_run
+      - skipped_edited
+      - completed
+      - failed
+    DocumentPageAiVerdict:
+      type: string
+      description: 'The AI-generation check''s verdict for a page. Only `ai_generated` escalates a page''s
+
+        headline `verdict`.
+
+        - `real` — no sign of AI generation
+
+        - `ai_generated` — the page appears wholly AI-generated
+
+        - `ai_edited` — AI-assisted editing
+
+        - `digitally_edited` — conventional digital editing
+
+        '
+      enum:
+      - real
+      - ai_generated
+      - ai_edited
+      - digitally_edited
+    DocumentFinding:
+      type: object
+      description: A single detector signal within a feature lane.
+      properties:
+        type:
+          type: string
+          description: The kind of signal, e.g. `iban_invalid_checksum`, `arithmetic_mismatch`, `xray_scanned_redaction`.
+        expected:
+          type:
+          - string
+          - 'null'
+          description: The expected value, when the finding is a mismatch.
+        got:
+          type:
+          - string
+          - 'null'
+          description: The observed value, when the finding is a mismatch.
+        bbox:
+          type:
+          - array
+          - 'null'
+          description: NORMALIZED page box `[x0, y0, x1, y1]`, each value 0–1. A different coordinate space from `DocumentAnalysisPage.editedRegions`, which is in original-image pixels — divide those by the page dimensions to draw both on one overlay.
+          items:
+            type: number
+            format: double
+        page:
+          type:
+          - integer
+          - 'null'
+          description: 1-based page number the finding is on.
+        confidence:
+          type:
+          - number
+          - 'null'
+          format: float
+          minimum: 0
+          maximum: 1
+        note:
+          type:
+          - string
+          - 'null'
+          description: Free-text note; may carry recovered hidden content as `hidden:'…'`.
+      required:
+      - type
+    DocumentFeatureScore:
+      type: object
+      description: One feature lane of the forensics verdict (tampering / consistency / anomaly).
+      properties:
+        score:
+          type: number
+          format: float
+          description: Raw lane score (0–1).
+        calibratedProbability:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Calibrated probability for this lane (0–1).
+        reliability:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: How reliable this lane's signal is for this document (0–1). Below ~0.7, treat it as low-confidence.
+        softScoreCalibrated:
+          type: boolean
+          description: Whether the lane's score is calibrated.
+        findings:
+          type: array
+          description: The individual detector signals behind the lane score.
+          items:
+            $ref: '#/components/schemas/DocumentFinding'
+        evidenceUris:
+          type: array
+          description: Storage URIs of this lane's evidence rasters. Not publicly fetchable — read a crop through `GET /api/app/document-analysis/{id}/evidence` instead.
+          items:
+            type: string
+      required:
+      - score
+      - calibratedProbability
+      - reliability
+      - findings
+      - evidenceUris
+    DocumentVerdict:
+      type: object
+      description: The document-level forensics verdict — three feature lanes plus their own fused conclusion.
+      properties:
+        docId:
+          type: string
+        docType:
+          type: string
+        docTypeConfidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        tampering:
+          oneOf:
+          - $ref: '#/components/schemas/DocumentFeatureScore'
+          - type: 'null'
+          description: Tampering lane — overlays, painted-over regions, bad redactions, font substitution.
+        consistency:
+          oneOf:
+          - $ref: '#/components/schemas/DocumentFeatureScore'
+          - type: 'null'
+          description: Consistency lane — arithmetic, IBAN checksums, dates, cross-field agreement.
+        anomaly:
+          oneOf:
+          - $ref: '#/components/schemas/DocumentFeatureScore'
+          - type: 'null'
+          description: Anomaly lane — how far the document sits from others of its type.
+        fusedVerdict:
+          $ref: '#/components/schemas/DocumentFusedVerdict'
+        fusedProbability:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        fusionRationale:
+          type: string
+          description: Explanation of this branch's verdict; may name the rule types that fired.
+        pipelineVersions:
+          type: object
+          additionalProperties:
+            type: string
+          description: Map of pipeline component → version, for reproducibility.
+        processedAt:
+          type: string
+          format: date-time
+        latencyMs:
+          type: integer
+          description: This branch's latency in milliseconds.
+      required:
+      - docId
+      - fusedVerdict
+      - fusedProbability
+    DocumentAnalysisRegion:
+      type: object
+      description: One localized edited region on a page, in ORIGINAL-IMAGE PIXELS with a top-left origin, against the page's `pageWidth` / `pageHeight` — safe to draw directly on the raster served by `GET /api/app/document-analysis/{id}/pages/{pageNumber}/image`. Note this is NOT the normalized 0–1 space that `DocumentFinding.bbox` uses.
+      properties:
+        x:
+          type: number
+          format: double
+          description: Left edge, in original-image pixels.
+        y:
+          type: number
+          format: double
+          description: Top edge, in original-image pixels.
+        width:
+          type: number
+          format: double
+        height:
+          type: number
+          format: double
+        score:
+          type: number
+          format: double
+          description: Max anomaly probability inside the region (0–1) — the number to badge the box with.
+        meanScore:
+          type: number
+          format: double
+          description: Mean anomaly probability inside the region (0–1).
+        areaFraction:
+          type: number
+          format: double
+          description: Region area ÷ image area.
+      required:
+      - x
+      - y
+      - width
+      - height
+      - score
+      - meanScore
+      - areaFraction
+    DocumentAnalysisPage:
+      type: object
+      description: One page's two legs — localized editing detection, then (on a clean page) the AI-generation check. Pages appear as they finish, so this list grows while the analysis runs.
+      properties:
+        pageNumber:
+          type: integer
+          description: 1-based page number.
+        verdict:
+          oneOf:
+          - $ref: '#/components/schemas/DocumentPageVerdict'
+          - type: 'null'
+          description: 'The page''s headline. **Render this, not `localizedEditing`** — a wholly AI-generated page carries `localizedEditing: false`, because no region of it was edited. Null when the page has no localization result at all.'
+        localizedEditing:
+          type:
+          - boolean
+          - 'null'
+          description: The localization check's editing call — whether its whole-page score crossed `threshold`. Null when that leg failed.
+        editingScore:
+          type:
+          - number
+          - 'null'
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Whole-page editing score (0–1); higher = more likely edited.
+        aiStatus:
+          $ref: '#/components/schemas/DocumentPageAiStatus'
+        aiVerdict:
+          oneOf:
+          - $ref: '#/components/schemas/DocumentPageAiVerdict'
+          - type: 'null'
+          description: Present only when `aiStatus` is `completed`.
+        aiConfidence:
+          type:
+          - number
+          - 'null'
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Confidence in `aiVerdict` — **not** a probability that the page is AI-generated. Only meaningful read together with the verdict it belongs to.
+        errorCode:
+          type:
+          - string
+          - 'null'
+          description: Stable error code when one of the page's legs failed. Null otherwise.
+        completedAt:
+          type: string
+          format: date-time
+        editedRegions:
+          type: array
+          description: Localized edited regions, strongest first (max 10). Empty when the page is clean or the localization leg failed.
+          items:
+            $ref: '#/components/schemas/DocumentAnalysisRegion'
+        pageWidth:
+          type:
+          - integer
+          - 'null'
+          description: Pixel width of the raster the regions are expressed against — and of the exact raster the page-image endpoint serves, so boxes cannot drift from the image they are drawn on.
+        pageHeight:
+          type:
+          - integer
+          - 'null'
+          description: Pixel height counterpart of `pageWidth`.
+        meanConfidence:
+          type:
+          - number
+          - 'null'
+          format: double
+          minimum: 0
+          maximum: 1
+          description: The localization check's self-estimated reliability of its map (0–1). Below ~0.7, present the regions as approximate.
+        threshold:
+          type:
+          - number
+          - 'null'
+          format: double
+          description: Decision threshold the localization check ran with — context for `editingScore`.
+        hasImage:
+          type: boolean
+          description: True when a stored page raster exists and `GET /api/app/document-analysis/{id}/pages/{pageNumber}/image` will serve it.
+      required:
+      - pageNumber
+      - aiStatus
+      - completedAt
+      - editedRegions
+      - hasImage
+    DocumentAnalysis:
+      type: object
+      description: 'One unified document analysis — the same shape whether the job is still running (`202`) or
+
+        terminal (`200`), so a client renders partial and final results with one code path.
+
+
+        Two verdicts, two vocabularies: the document-level `fusedVerdict`
+
+        (`accept`/`review`/`reject`/`insufficient_quality`) is the overall decision, while a page''s
+
+        `verdict` (`authentic`/`edited`/`ai_generated`) describes that one page.
+
+        '
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Analysis id — use it for `GET {id}` and the page-image / evidence endpoints.
+        docId:
+          type: string
+          description: Pipeline document identifier (tenant-encoded).
+        fileName:
+          type:
+          - string
+          - 'null'
+          description: Original uploaded file name.
+        mediaKind:
+          $ref: '#/components/schemas/DocumentMediaKind'
+        docType:
+          type: string
+          description: The classified (or supplied) document type — see `DocumentType` for the common values. Empty until classified, and empty when it could not be determined.
+        status:
+          $ref: '#/components/schemas/DocumentStatus'
+        forensicsStatus:
+          $ref: '#/components/schemas/DocumentStatus'
+        pagesStatus:
+          $ref: '#/components/schemas/DocumentStatus'
+        fusedVerdict:
+          type: string
+          description: The headline verdict once complete — see `DocumentFusedVerdict` for the values. Empty while processing.
+        fusedProbability:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Risk score (0–1) behind `fusedVerdict`. It is the strongest signal that fired, never a blend of the branches.
+        fusionRationale:
+          type: string
+          description: Plain-language explanation of the verdict. Empty while processing.
+        stageErrorsJson:
+          type:
+          - string
+          - 'null'
+          description: Stage failures as a JSON-array-encoded **string**, e.g. `"[\"forensics_timeout\"]"` — parse it as JSON, and treat an unparseable value as a single unstructured error. Null when nothing failed.
+        pagesTotal:
+          type: integer
+          description: Total pages in the document.
+        pagesCompleted:
+          type: integer
+          description: Pages finished so far.
+        pagesFailed:
+          type: integer
+          description: Pages that errored.
+        creditsUsed:
+          type: integer
+          description: Credits charged for this analysis; `0` when the credit was refunded.
+        refundReason:
+          oneOf:
+          - $ref: '#/components/schemas/DocumentRefundReason'
+          - type: 'null'
+          description: Present when the credit was returned.
+        completedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the analysis became terminal. Null while processing.
+        docTypeConfidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Confidence in `docType` (0–1); `0` when unknown.
+        processingTimeMs:
+          type: integer
+          format: int64
+          description: Forensics-branch wall-clock in milliseconds; `0` when unknown.
+        processedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the forensics branch produced its verdict. Null when unknown.
+        hasOriginal:
+          type: boolean
+          description: True while a retained copy of the uploaded document exists for this analysis.
+        verdict:
+          oneOf:
+          - $ref: '#/components/schemas/DocumentVerdict'
+          - type: 'null'
+          description: The full forensics verdict — feature lanes and findings. Null while that branch is still running, or if it never reported.
+        pages:
+          type: array
+          description: Per-page results; grows while the analysis runs.
+          items:
+            $ref: '#/components/schemas/DocumentAnalysisPage'
+      required:
+      - id
+      - docId
+      - mediaKind
+      - docType
+      - status
+      - forensicsStatus
+      - pagesStatus
+      - fusedVerdict
+      - fusedProbability
+      - fusionRationale
+      - pagesTotal
+      - pagesCompleted
+      - pagesFailed
+      - creditsUsed
+      - pages
+    DocumentAnalysisCreditInfo:
+      type: object
+      description: Credit balance and the live upload constraints for document analysis.
+      properties:
+        currentBalance:
+          type: integer
+          description: Credits available on the account.
+        creditCostPerDocument:
+          type: integer
+          description: Credits charged per analysis.
+        maxBatchFiles:
+          type: integer
+          description: Maximum documents to submit in one batch (default 5).
+        analyzeConcurrency:
+          type: integer
+          description: Recommended number of concurrent `analyze` requests when working through a batch (default 3).
+        maxFileSizeMB:
+          type: integer
+          description: Maximum PDF size in MB (default 25).
+        maxImageSizeMB:
+          type: integer
+          description: Maximum image size in MB (default 10).
+        userHeadroomRemaining:
+          type:
+          - integer
+          - 'null'
+          description: Credits left under the calling user's own cap. Null for a principal without one — an API token has no per-user cap, so it is always null for token callers.
+        canUseFeature:
+          type: boolean
+          description: True when document analysis is enabled for the account AND the balance covers one document.
+      required:
+      - currentBalance
+      - creditCostPerDocument
+      - maxBatchFiles
+      - analyzeConcurrency
+      - maxFileSizeMB
+      - maxImageSizeMB
+      - canUseFeature
+    DocumentError:
+      type: object
+      description: The error shape the document-analysis endpoints return for a rejected upload — a single human-readable message, without the `{ code, message }` envelope the other modalities use.
+      properties:
+        error:
+          type: string
+          description: What went wrong, in plain language.
+      required:
+      - error
+    PaywallError:
+      type: object
+      description: Returned when a per-user credit cap has been reached.
+      properties:
+        code:
+          type: string
+          description: '`USER_CREDIT_LIMIT_REACHED`'
+        feature:
+          type: string
+          description: The feature the cap applies to, e.g. `document-analysis`.
+        redirectUrl:
+          type:
+          - string
+          - 'null'
+        message:
+          type: string
+      required:
+      - code
+      - feature
+      - message

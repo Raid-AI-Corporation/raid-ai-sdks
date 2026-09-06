@@ -1,0 +1,69 @@
+# Dependency update policy.
+#
+# Grouped on purpose. Ungrouped weekly updates open a PR per dependency, which on
+# a repository this size means a stream nobody reads — and a repository that is
+# nominally monitored and actually not. Minor and patch updates travel together
+# per ecosystem; majors still arrive individually, because those are the ones
+# that need a human to read them.
+#
+# This file controls ROUTINE version updates only. Security advisories are raised
+# by Dependabot whenever GitHub learns about them, independently of anything here,
+# but only once Dependabot alerts are enabled for the repository — an
+# organisation-level setting, not something a file in the repo can turn on.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/python"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    target-branch: "main"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    open-pull-requests-limit: 5
+    groups:
+      pip-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "npm"
+    directory: "/typescript"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    target-branch: "main"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    target-branch: "main"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    open-pull-requests-limit: 2
+    groups:
+      github-actions:
+        patterns:
+          - "*"

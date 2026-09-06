@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "raidxai"
+version = "0.2.0"
+description = "Official Python SDK for the Raid AI detection API — detect AI-generated and manipulated media, and fact-check claims."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "LicenseRef-Raid-AI-Terms"
+license-files = ["LICENSE"]
+authors = [{ name = "Raid AI", email = "info@raidxai.com" }]
+keywords = ["raid", "raidxai", "deepfake", "ai-detection", "forensics", "fact-checking", "sdk"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "httpx>=0.27",
+  "pydantic>=2.7",
+]
+
+[project.urls]
+Homepage = "https://docs.raidxai.com"
+Documentation = "https://docs.raidxai.com"
+Repository = "https://github.com/Raid-AI-Corporation/raid-ai-sdks"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.6",
+  "datamodel-code-generator>=0.25",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/raidxai"]
+
+# Ship only the public SDK in the source distribution — no tests, internal dev
+# scripts, or dotfiles. (The wheel already ships only the `raidxai` package.)
+[tool.hatch.build.targets.sdist]
+ignore-vcs = true
+only-include = ["src/raidxai", "README.md", "LICENSE"]
+exclude = ["**/.gitignore", "**/__pycache__"]
+
+# target-version matches the package's requires-python floor (3.10), so the
+# linter never suggests 3.11/3.12-only syntax (StrEnum, PEP 695 generics) that
+# would break older supported interpreters. line-length 100 follows the workspace.
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/raidxai/_generated/*" = ["E501", "UP", "B", "I"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
