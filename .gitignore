@@ -1,0 +1,21 @@
+# TypeScript
+typescript/node_modules/
+typescript/dist/
+*.tsbuildinfo
+
+# Python
+python/.venv/
+python/dist/
+python/build/
+python/*.egg-info/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets / local env — never commit a real token
+.env
+*.env
+!.env.example
+
+# OS / editor
+.DS_Store
